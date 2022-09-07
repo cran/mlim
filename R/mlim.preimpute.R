@@ -13,21 +13,27 @@
 #'                  supported options are "RF" (Random Forest) and "mm"
 #'                  (mean-mode replacement). the default is "RF", which carries
 #'                  a parallel random forest imputation, using all the CPUs available.
-#' @param report filename. if a filename is specified, the \code{"md.log"} R
-#'               package is used to generate a Markdown progress report for the
-#'               imputation. the format of the report is adopted based on the
-#'               \code{'verbosity'} argument. the higher the verbosity, the more
-#'               technical the report becomes. if verbosity equals "debug", then
-#'               a log file is generated, which includes time stamp and shows
-#'               the function that has generated the message. otherwise, a
-#'               reduced markdown-like report is generated.
+#'                  the other alternative is "mm" which performs mean/mode
+#'                  imputation.
+#' @param seed integer. specify the random generator seed
 #' @return imputed data.frame
 #' @author E. F. Haghish
-#' @keywords Internal
-#' @noRd
+#' @examples
+#' \donttest{
+#' data(iris)
+#'
+#' # add 10% stratified missing values to one factor variable
+#' irisNA <- iris
+#' irisNA$Species <- mlim.na(irisNA$Species, p = 0.1, stratify = TRUE, seed = 2022)
+#'
+#' # run the default random forest preimputation
+#' MLIM <- mlim.preimpute(irisNA)
+#' mlim.error(MLIM, irisNA, iris)
 
-mlim.preimpute <- function(data, preimpute, seed = NULL,
-                           report = NULL, debug=FALSE) {
+#' }
+#' @export
+
+mlim.preimpute <- function(data, preimpute = "RF", seed = NULL) {
 
   #if (tolower(preimpute) == "knn") {
   #  set.seed(seed)
@@ -35,14 +41,14 @@ mlim.preimpute <- function(data, preimpute, seed = NULL,
   #  if (!is.null(report)) md.log("kNN preimputation is done", date=debug, time=debug, trace=FALSE)
   #}
   if (tolower(preimpute) == "rf") {
-    cat("\nRandom Forest preimputation in progress...\n")
-    data <- missRanger::missRanger(data, num.trees=1000, mtry=1,
+    message("\nRandom Forest preimputation in progress...\n")
+    data <- missRanger::missRanger(data, num.trees=500, mtry=1,
                                    verbose = 0, returnOOB=TRUE, seed = seed)
-    if (!is.null(report)) md.log("RF preimputation is done", date=debug, time=debug, trace=FALSE)
+    #if (!is.null(report)) md.log("RF preimputation is done", date=debug, time=debug, trace=FALSE)
   }
   else if (tolower(preimpute) == "mm") {
     data <- meanmode(data)
-    if (!is.null(report)) md.log("Mean/Mode preimputation is done", date=debug, time=debug, trace=FALSE)
+    #if (!is.null(report)) md.log("Mean/Mode preimputation is done", date=debug, time=debug, trace=FALSE)
   }
   else stop(paste(preimpute, "is not recognized preimputation argument"))
 

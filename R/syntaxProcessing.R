@@ -23,8 +23,8 @@ syntaxProcessing <- function(data, preimpute, impute, ram,
   max_ram <- NULL
 
   stopifnot(
-    "'data' is not a data.frame" = is.data.frame(data),
-    "'data' has no observations" = dim(data) >= 1,
+    #"'data' is not a data.frame" = is.data.frame(data) | inherits(data, "mlim"),
+    #"'data' has no observations" = dim(data) >= 1, #not applicable to mlim object
     #"'formula' should be a formula!" = inherits(formula, "formula"),
     #length(formula <- as.character(formula)) == 3L,
     #"'max_models' must be a positive integer equal or more than 1" = max_models >= 1,
@@ -47,11 +47,26 @@ syntaxProcessing <- function(data, preimpute, impute, ram,
     if (!is.numeric(ram)) stop("'ram' must be an integer, specifying amount of RAM in Gigabytes")
     min_ram <- paste0(ram - 1, "G")
     max_ram <- paste0(ram, "G")
+
+    # if more than 2/3 of the RAM is dedicated to Java server, give a warning
+    if (ram > 0.666*round(as.numeric(memuse::Sys.meminfo()$totalram)*9.31*1e-10)) {
+      message("NOTE: you have dedicated more than 2/3 of your total RAM to mlim.\n      This is fine as long as you do not use 'XGB' algorithm.\n      You are advised to monitor your RAM during the imputation...\n\n")
+    }
   }
   else {
-    ram <- floor(as.numeric(memuse::Sys.meminfo()$freeram)*9.31*1e-10)
-    min_ram <- paste0(ram - 1, "G")
-    max_ram <- paste0(ram, "G")
+    ## NOTE: memuse::Sys.meminfo() can return RAM near zero, which fails
+    ##       initiating the Java server
+    # ram <- floor(as.numeric(memuse::Sys.meminfo()$freeram)*9.31*1e-10)
+    # if (ram > 4) {
+    #   min_ram <- paste0(ram - 1, "G")
+    #   max_ram <- paste0(ram, "G")
+    # }
+    # else {
+    #   min_ram <- NULL
+    #   max_ram <- NULL
+    # }
+    min_ram <- NULL
+    max_ram <- NULL
   }
 
   if ("StackEnsemble" %in% impute) {

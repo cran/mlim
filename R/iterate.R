@@ -5,23 +5,30 @@
 #'              a powerful algorithm - that requires a lot of time for fine-tuning -
 #'              is specified for the imputation. such algorithms are used last in the imputation
 #'              to save time.
+#' @importFrom utils setTxtProgressBar txtProgressBar capture.output packageVersion
+#' @importFrom h2o h2o.init as.h2o h2o.automl h2o.predict h2o.ls
+#'             h2o.removeAll h2o.rm h2o.shutdown
+#' @importFrom md.log md.log
+#' @importFrom memuse Sys.meminfo
+#' @importFrom stats var setNames na.omit
 #' @return list
 #' @author E. F. Haghish
 #' @keywords Internal
 #' @noRd
 
-iterate <- function(dataNA, data, bdata, boot, hex, bhex=NULL, metrics, tolerance, doublecheck,
-                    k, X, Y, z,
+iterate <- function(procedure,
+                    MI, dataNA, data, bdata, boot, hex, bhex, metrics, tolerance, doublecheck,
+                    m, k, X, Y, z, m.it,
 
                     # loop data
-                    vars2impute, vars2postimpute, storeVars2impute,
-                    allPredictors, preimpute, impute, postimpute,
+                    ITERATIONVARS, vars2impute,
+                    allPredictors, preimpute, impute, postimputealgos,
 
                     # settings
                     error_metric, FAMILY, cv, tuning_time,
                     max_models, weights_column,
-                    keep_cross_validation_predictions,
-                    balance, seed, save, flush,
+                    keep_cv,
+                    autobalance, balance, seed, save, flush,
 
                     verbose, debug, report, sleep,
 
@@ -32,12 +39,14 @@ iterate <- function(dataNA, data, bdata, boot, hex, bhex=NULL, metrics, toleranc
                     ) {
 
   # for the first dataframe imputation
-  if (is.null(bhex)) bhex <- hex
-  ZZ <- z
-  if (z >= length(vars2impute)) ZZ <- length(vars2impute) - 1
+  #if (is.null(bhex)) bhex <- hex
 
-  if (verbose==0) pb <- txtProgressBar(ZZ, length(vars2impute), style = 3)
-  if (debug) print(paste0(Y," (RAM = ", memuse::Sys.meminfo()$freeram,")"))
+  #ZZ <- z
+  #message(paste("z:",z, "length:",  length(vars2impute)))
+  #if (z >= length(vars2impute)) ZZ <- length(vars2impute) - 1
+
+  if (verbose==0) pb <- txtProgressBar(z-1, length(vars2impute), style = 3)
+  if (debug) message(paste0(Y," (RAM = ", memuse::Sys.meminfo()$freeram,")\n"))
 
   if (!boot) {
     v.na <- dataNA[, Y]
@@ -58,7 +67,10 @@ iterate <- function(dataNA, data, bdata, boot, hex, bhex=NULL, metrics, toleranc
   if (length(X) == 0L) {
     if (debug) md.log("uni impute", trace=FALSE)
     #??? change this with a self-written function
-    hex[[Y]] <- h2o::as.h2o(missRanger::imputeUnivariate(data[[Y]]))
+    tryCatch(hex[[Y]] <- h2o::as.h2o(missRanger::imputeUnivariate(data[[Y]])),
+             error = function(cond) {
+               #message("connection to JAVA server failed...\n");
+               return(stop("preimputation failed! \nuse 'mlim.preimpute' function and pass it via 'preimputed.data' to mlim"))})
     Sys.sleep(sleep)
   }
   else {
@@ -78,28 +90,50 @@ iterate <- function(dataNA, data, bdata, boot, hex, bhex=NULL, metrics, toleranc
     #  sort_metric <- "AUTO"
     #}
 
+    # specify "imputation" or "postimputation" procedure
+    # ============================================================
+    usedalgorithms <- NULL
+    if (procedure == "impute") usedalgorithms <- impute
+    else usedalgorithms <- postimputealgos
+    # if (debug) message(paste("usedalgorithms", usedalgorithms))
+    # message("X:", X, "\n")
+    # message("Y:", Y, "\n")
+    # message("sort_metric:", sort_metric, "\n")
+    # message("usedalgorithms:", usedalgorithms, "\n")
+    # message("cv:", cv, "\n")
+    # message("tuning_time:", tuning_time, "\n")
+    # message("max_models:", max_models, "\n")
+    # message("weights_column:", weights_column, "\n")
+    # message("keep_cv:", keep_cv, "\n")
+    # message("seed:", seed, "\n")
+    # message(which(!y.na))
+    # message(dim(as.data.frame(bhex)))
+    # message(dim(bhex[which(!y.na), ]))
     # ------------------------------------------------------------
     # fine-tune a gaussian model
     # ============================================================
     if (FAMILY[z] == 'gaussian' || FAMILY[z] == 'gaussian_integer'
         || FAMILY[z] == 'quasibinomial' ) {
-      fit <- h2o::h2o.automl(x = setdiff(X, Y), y = Y,
-                             training_frame = bhex[which(!y.na), ],
-                             sort_metric = sort_metric,
-                             project_name = "mlim",
-                             include_algos = impute,
-                             nfolds = cv,
-                             exploitation_ratio = 0.1,
-                             max_runtime_secs = tuning_time,
-                             max_models = max_models,
-                             weights_column = weights_column[which(!y.na)],
-                             keep_cross_validation_predictions =
-                               keep_cross_validation_predictions,
-                             seed = seed
-                             #stopping_metric = stopping_metric,
-                             #stopping_rounds = stopping_rounds
-                             #stopping_tolerance=stopping_tolerance
-      )
+      tryCatch(fit <- h2o::h2o.automl(x = setdiff(X, Y), y = Y,
+                                      training_frame = bhex[which(!y.na), ],
+                                      sort_metric = sort_metric,
+                                      project_name = "mlim",
+                                      include_algos = usedalgorithms,
+                                      nfolds = cv,
+                                      exploitation_ratio = 0.1,
+                                      max_runtime_secs = tuning_time,
+                                      max_models = max_models,
+                                      weights_column = weights_column[which(!y.na)],
+                                      keep_cross_validation_predictions = keep_cv,
+                                      seed = seed
+                                      # #stopping_metric = stopping_metric,
+                                      # #stopping_rounds = stopping_rounds
+                                      # #stopping_tolerance=stopping_tolerance
+      ),
+      error = function(cond) {
+        #message("connection to JAVA server failed...\n");
+        return(stop("model training failed. perhaps low RAM problem?"))})
+
     }
 
     # ------------------------------------------------------------
@@ -109,10 +143,17 @@ iterate <- function(dataNA, data, bdata, boot, hex, bhex=NULL, metrics, toleranc
 
       # check balance argument (default is FALSE)
       balance_classes <- FALSE
-      sort_metric <- "AUC"
-      if (Y %in% balance) {
+      #sort_metric <- "mean_per_class_error" #"RMSE" #this is the default metric, not mean_per_class
+
+      if (Y %in% balance | autobalance) {
         balance_classes <- TRUE
-        sort_metric <- "AUCPR"
+      }
+
+      if (FAMILY[z] == 'binomial' & !balance_classes) {
+        #sort_metric <- "AUC"
+      }
+      if (FAMILY[z] == 'binomial' & balance_classes) {
+        #sort_metric <- "AUCPR"
       }
 
       #???
@@ -123,32 +164,34 @@ iterate <- function(dataNA, data, bdata, boot, hex, bhex=NULL, metrics, toleranc
       #  trainingsample <- sort(setdiff(which(!y.na), vdFrame))
       #}
 
-      fit <- h2o::h2o.automl(x = setdiff(X, Y), y = Y,
-                             balance_classes = balance_classes,
-                             sort_metric = sort_metric,
-                             training_frame = bhex[which(!y.na), ],
-                             #validation_frame = bhex[vdFrame, ],
-                             project_name = "mlim",
-                             include_algos = impute,
-                             nfolds = cv,
-                             exploitation_ratio = 0.1,
-                             max_runtime_secs = tuning_time,
-                             max_models = max_models,
-                             weights_column = weights_column[which(!y.na)],
-                             keep_cross_validation_predictions =
-                               keep_cross_validation_predictions,
-                             seed = seed
-                             #stopping_metric = stopping_metric,
-                             #stopping_rounds = stopping_rounds
-                             #stopping_tolerance=stopping_tolerance
-      )
+      tryCatch(fit <- h2o::h2o.automl(x = setdiff(X, Y), y = Y,
+                                      balance_classes = balance_classes,
+                                      sort_metric = sort_metric,
+                                      training_frame = bhex[which(!y.na), ],
+                                      #validation_frame = bhex[vdFrame, ],
+                                      project_name = "mlim",
+                                      include_algos = usedalgorithms,
+                                      nfolds = cv,
+                                      exploitation_ratio = 0.1,
+                                      max_runtime_secs = tuning_time,
+                                      max_models = max_models,
+                                      weights_column = weights_column[which(!y.na)],
+                                      keep_cross_validation_predictions = keep_cv,
+                                      seed = seed
+                                      #stopping_metric = stopping_metric,
+                                      #stopping_rounds = stopping_rounds
+                                      #stopping_tolerance=stopping_tolerance
+      ),
+      error = function(cond) {
+        #message("connection to JAVA server failed...\n");
+        return(stop("model training failed. perhaps low RAM problem?"))})
     }
     else {
       stop(paste(FAMILY[z], "is not recognized"))
     }
 
     Sys.sleep(sleep)
-    #print(fit@leaderboard)
+    #message(fit@leaderboard)
 
     if (debug) {
       md.log("model fitted", trace=FALSE)
@@ -156,7 +199,11 @@ iterate <- function(dataNA, data, bdata, boot, hex, bhex=NULL, metrics, toleranc
     }
 
 
-    perf <- h2o::h2o.performance(fit@leader)
+    tryCatch(perf <- h2o::h2o.performance(fit@leader, xval = TRUE),
+             error = function(cond) {
+               message("connection to JAVA server failed...\n");
+               return(stop("Java server crashed. perhaps a RAM problem?"))})
+
     Sys.sleep(sleep)
 
     # update metrics, and if there is an improvement, update the data
@@ -165,19 +212,47 @@ iterate <- function(dataNA, data, bdata, boot, hex, bhex=NULL, metrics, toleranc
     if (roundRMSE == 1) roundRMSE <- 4
 
     iterationMetric <- extractMetrics(bhex, k, Y, perf, FAMILY[z])
-#print(iterationMetric)
+
 
     if (k == 1) {
       ## do not convert pred to a vector. let it be "H2OFrame"
-      pred <- h2o::h2o.predict(fit@leader, newdata = hex[which(v.na), X])[,1]
+      tryCatch(pred <- h2o::h2o.predict(fit@leader, newdata = hex[which(v.na), X])[,1],
+               error = function(cond) {
+                 message("connection to JAVA server failed...\n");
+                 return(stop("Java server crashed. perhaps a RAM problem?"))})
       Sys.sleep(sleep)
       if (debug) md.log("predictions were generated", trace=FALSE)
-      hex[which(v.na), Y] <- pred #h2o requires numeric subsetting
+
+      #h2o requires numeric subsetting
+      tryCatch(hex[which(v.na), Y] <- pred,
+               error = function(cond) {
+                 message("connection to JAVA server failed...\n");
+                 return(stop("Java server crashed. perhaps a RAM problem?"))})
 
       # RAM cleaning-ish, help needed
-      h2o::h2o.rm(pred)
+      tryCatch(h2o::h2o.rm(pred),
+               error = function(cond) {
+                 message("connection to JAVA server failed...\n");
+                 return(stop("Java server crashed. perhaps a RAM problem?"))})
+
       if (debug) md.log("prediction was cleaned", trace=FALSE)
       Sys.sleep(sleep)
+
+      # also update the bootstraped data, otherwise, update the pointer
+      if (boot) {
+        tryCatch(pred <- h2o::h2o.predict(fit@leader, newdata = bhex[which(y.na), X])[,1],
+                 error = function(cond) {
+                   message("connection to JAVA server failed...\n");
+                   return(stop("Java server crashed. perhaps a RAM problem?"))})
+        tryCatch(bhex[which(y.na), Y] <- pred,
+                 error = function(cond) {
+                   message("connection to JAVA server failed...\n");
+                   return(stop("Java server crashed. perhaps a RAM problem?"))})
+        Sys.sleep(sleep)
+      }
+      else {
+        bhex <- hex
+      }
 
       # update the metrics
       metrics <- rbind(metrics, iterationMetric)
@@ -189,12 +264,12 @@ iterate <- function(dataNA, data, bdata, boot, hex, bhex=NULL, metrics, toleranc
       checkMetric <- round(checkMetric, digits = 5)
 
       # >>> this bit looks like I'm paranoid again... improvement needed
-      if (!is.null(errPrevious)) {
-        if (is.na(errPrevious)) {
-          errPrevious <- 1
-        }
-      }
-      else errPrevious <- 1
+      # if (!is.null(errPrevious)) {
+      #   if (is.na(errPrevious)) {
+      #     errPrevious <- 1
+      #   }
+      # }
+      # else errPrevious <- 1
       # <<<
 
       errImprovement <- checkMetric - errPrevious
@@ -202,24 +277,38 @@ iterate <- function(dataNA, data, bdata, boot, hex, bhex=NULL, metrics, toleranc
 
       # IF ERROR DECREASED
       if (percentImprove < -tolerance) {
-        if (debug) print(paste(errImprovement, percentImprove, -tolerance))
+        if (debug) message(paste(round(percentImprove, 6), -tolerance))
         ## do not convert pred to a vector. let it be "H2OFrame"
-        pred <- h2o::h2o.predict(fit@leader, newdata = hex[which(v.na), X])[,1]
+
+        tryCatch(pred <- h2o::h2o.predict(fit@leader, newdata = hex[which(v.na), X])[,1],
+                 error = function(cond) {
+                   message("connection to JAVA server failed...\n");
+                   return(stop("Java server crashed. perhaps a RAM problem?"))})
         Sys.sleep(sleep)
         if (debug) md.log("predictions were generated", trace=FALSE)
         hex[which(v.na), Y] <- pred #h2o requires numeric subsetting
         Sys.sleep(sleep)
         if (debug) md.log("data was updated in h2o cloud", trace=FALSE)
 
-        # also update the bootstraped data
+        # also update the bootstraped data, otherwise update the pointer
         if (boot) {
-          pred <- h2o::h2o.predict(fit@leader, newdata = bhex[which(y.na), X])[,1]
-          bhex[which(y.na), Y] <- pred
+          tryCatch(pred <- h2o::h2o.predict(fit@leader, newdata = bhex[which(y.na), X])[,1],
+                   error = function(cond) {
+                     message("connection to JAVA server failed...\n");
+                     return(stop("Java server crashed. perhaps a RAM problem?"))})
+          tryCatch(bhex[which(y.na), Y] <- pred,
+                   error = function(cond) {
+                     message("connection to JAVA server failed...\n");
+                     return(stop("Java server crashed. perhaps a RAM problem?"))})
           Sys.sleep(sleep)
         }
+        else bhex <- hex
 
         # RAM cleaning-ish, help needed
-        h2o::h2o.rm(pred)
+        tryCatch(h2o::h2o.rm(pred),
+                 error = function(cond) {
+                   message("connection to JAVA server failed...\n");
+                   return(stop("Java server crashed. perhaps a RAM problem?"))})
         if (debug) md.log("prediction was cleaned", trace=FALSE)
 
         # update the metrics
@@ -227,16 +316,19 @@ iterate <- function(dataNA, data, bdata, boot, hex, bhex=NULL, metrics, toleranc
       }
 
       else { #if the error increased
-        if (debug) print(paste("INCREASED", errImprovement, percentImprove, -tolerance))
+        if (debug) message(paste("INCREASED", errImprovement, percentImprove, -tolerance))
         iterationMetric[, error_metric] <- NA
         metrics <- rbind(metrics, iterationMetric)
         if (!doublecheck) {
-          vars2impute <- setdiff(vars2impute, Y)
+          ITERATIONVARS <- setdiff(ITERATIONVARS, Y)
         }
       }
     }
 
-    h2o::h2o.rm(fit)
+    tryCatch(h2o::h2o.rm(fit),
+             error = function(cond) {
+               #message("connection to JAVA server failed...\n");
+               return(stop("Java server crashed. perhaps a RAM problem?"))})
     if (debug) md.log("model was cleaned", trace=FALSE)
     Sys.sleep(sleep)
 
@@ -267,22 +359,29 @@ iterate <- function(dataNA, data, bdata, boot, hex, bhex=NULL, metrics, toleranc
     savestate <- list(
 
       # Data
-      # ====
+      # ----------------------------------
+      MI = MI,
+      dataNA = dataNA,
       data=as.data.frame(hex),
+      bdata=as.data.frame(bhex),
       dataLast=dataLast,
       metrics = metrics,
       mem=mem,
       orderedCols=orderedCols,
 
-      # loop data
-      # ---------
-      k = k, z=z, X=X, Y=Y, vars2impute=vars2impute, FAMILY=FAMILY,
+      # Loop data
+      # ----------------------------------
+      m = m , k = k, z=z, X=X, Y=Y, m.it = m.it,
+      vars2impute=vars2impute, FAMILY=FAMILY,
 
       # settings
-      # --------
+      # ----------------------------------
+      ITERATIONVARS=ITERATIONVARS,
       impute=impute,
-      postimpute=postimpute,
+      postimputealgos=postimputealgos,
       ignore=ignore,
+      autobalance = autobalance,
+      balance = balance,
       save = save,
       maxiter = maxiter,
       miniter = miniter,
@@ -307,6 +406,7 @@ iterate <- function(dataNA, data, bdata, boot, hex, bhex=NULL, metrics, toleranc
       cpu = cpu,
       max_ram=max_ram,
       min_ram = min_ram,
+      keep_cv = keep_cv,
 
       # save the package version used for the imputation
       pkg=packageVersion("mlim")
@@ -331,18 +431,39 @@ iterate <- function(dataNA, data, bdata, boot, hex, bhex=NULL, metrics, toleranc
   # considered a bad practice and should be improved in future releases
   # ------------------------------------------------------------
   if (flush) {
-    currentData <- as.data.frame(hex)
-    h2o::h2o.removeAll(timeout_secs = 30)
+    tryCatch(HEX <- as.data.frame(hex),
+             error = function(cond) {
+               #message("connection to JAVA server failed...\n");
+               return(stop("Java server crashed. perhaps a RAM problem?"))})
+    tryCatch(BHEX<- as.data.frame(bhex),
+             error = function(cond) {
+               #message("connection to JAVA server failed...\n");
+               return(stop("Java server crashed. perhaps a RAM problem?"))})
+    tryCatch(h2o::h2o.removeAll(timeout_secs = 0),
+             error = function(cond) {
+               #message("connection to JAVA server failed...\n");
+               return(stop("Java server crashed. perhaps a RAM problem?"))})
     Sys.sleep(sleep)
     gc()
     gc()
+
+    ### NOT ALLOWED ON CRAN :/
     #h2o:::.h2o.garbageCollect()
     #h2o:::.h2o.garbageCollect()
     #h2o:::.h2o.garbageCollect()
     Sys.sleep(sleep)
-    hex <- h2o::as.h2o(currentData) #ID: data_
+    tryCatch(hex <- h2o::as.h2o(HEX) ,
+             error = function(cond) {
+               #message("connection to JAVA server failed...\n");
+               return(stop("Java server crashed. perhaps a RAM problem?"))})
+    tryCatch(bhex <- h2o::as.h2o(BHEX),
+             error = function(cond) {
+               #message("connection to JAVA server failed...\n");
+               return(stop("Java server crashed. perhaps a RAM problem?"))})
+    #ID: data_
+     #ID: data_
     Sys.sleep(sleep)
-    hexID <- h2o::h2o.getId(hex)
+    #hexID <- h2o::h2o.getId(hex)
     if (debug) md.log("flushed", trace=FALSE)
   }
 
@@ -353,5 +474,5 @@ iterate <- function(dataNA, data, bdata, boot, hex, bhex=NULL, metrics, toleranc
               hex = hex,
               bhex = bhex,
               metrics = metrics,
-              vars2impute=vars2impute))
+              ITERATIONVARS=ITERATIONVARS))
 }

@@ -1,21 +1,27 @@
 #' @title iteration_loop
 #' @description runs imputation iteration loop to fully impute a dataframe
+#' @importFrom utils setTxtProgressBar txtProgressBar capture.output packageVersion
+#' @importFrom h2o h2o.init as.h2o h2o.automl h2o.predict h2o.ls
+#'             h2o.removeAll h2o.rm h2o.shutdown
+#' @importFrom md.log md.log
+#' @importFrom memuse Sys.meminfo
+#' @importFrom stats var setNames na.omit
 #' @return list
 #' @author E. F. Haghish
 #' @keywords Internal
 #' @noRd
-iteration_loop <- function(MIit, dataNA, data, boot, metrics, tolerance, doublecheck,
-                    k, X, Y, z,
+iteration_loop <- function(MI, dataNA, data, bdata, boot, metrics, tolerance, doublecheck,
+                    m, k, X, Y, z, m.it,
 
                     # loop data
                     vars2impute, vars2postimpute, storeVars2impute,
-                    allPredictors, preimpute, impute, postimpute,
+                    allPredictors, preimpute, impute, postimputealgos,
 
                     # settings
                     error_metric, FAMILY, cv, tuning_time,
                     max_models, weights_column,
-                    keep_cross_validation_predictions,
-                    balance, seed, save, flush,
+                    keep_cv,
+                    autobalance, balance, seed, save, flush,
                     verbose, debug, report, sleep,
 
                     # saving settings
@@ -26,35 +32,59 @@ iteration_loop <- function(MIit, dataNA, data, boot, metrics, tolerance, doublec
   # bootrtap
   # ------------------------------------------------------------
   if (!boot) {
-    hex <- h2o::as.h2o(data) #ID: data_
+     #ID: data_
+    tryCatch(hex <- h2o::as.h2o(data),
+             error = function(cond) {
+               message("trying to connect to JAVA server...\n");
+               return(stop("Java server has crashed (low RAM?)"))})
     bhex <- hex
     Sys.sleep(sleep)
-    hexID <- h2o::h2o.getId(hex)
-    md.log(paste("dataset ID:", hexID), trace=FALSE) #, print = TRUE
   }
   else {
     rownames(data) <- 1:nrow(data) #remember the rows that are missing
-    bdata <- data[sample.int(nrow(data), nrow(data), replace=TRUE), ]
-    hex <- h2o::as.h2o(data)
-    bhex<- h2o::as.h2o(bdata)
+    if (is.null(bdata)) {
+      sampling_index <- sample.int(nrow(data), nrow(data), replace=TRUE)
+
+      # drop the duplicates because they screw up the k-fold cross-validation.
+      # multiple identical observations might go to train and test datasets.
+
+      #??? you might still consider that in the bootstrap one row was selected multiple
+      #times by adding weight_column. discuss that with the team later, if it makes
+      #any sense to do that. adding weight is analogous to including multiple
+      #rows, with the difference that it will not screw up the cross-validation...
+      sampling_index <- sampling_index[!duplicated(sampling_index)]
+      bdata <- data[sampling_index, ]
+    }
+
+    tryCatch(hex <- h2o::as.h2o(data),
+             error = function(cond) {
+               message("trying to connect to JAVA server...\n");
+               return(stop("Java server has crashed (low RAM?)"))})
+
+    tryCatch(bhex<- h2o::as.h2o(bdata),
+             error = function(cond) {
+               message("trying to connect to JAVA server...\n");
+               return(stop("Java server has crashed (low RAM?)"))})
   }
+  Sys.sleep(sleep)
 
   # update the fresh data
   # ------------------------------------------------------------
-  running <- TRUE
+  running       <- TRUE
   runpostimpute <- FALSE
 
-
-  Sys.sleep(sleep)
   if (debug) md.log("data was sent to h2o cloud", date=debug, time=debug, trace=FALSE)
+
+  # define iteration var. this is a vector of varnames that should be imputed
+  # if 'doublecheck' argument is FALSE, everytime a variable stops improving,
+  # remove it from ITERATIONVARS. When you get to postimputation, reset the
+  # ITERATIONVARS.
+  ITERATIONVARS <- vars2impute
 
   while (running) {
 
-    # update the loop
-    k <- k + 1L
-
     # always print the iteration
-    cat("\ndata ", MIit, ", iteration ", k, ":\n", sep = "") #":\t"
+    message(paste0("\ndata ", m.it, ", iteration ", k, " (RAM = ", memuse::Sys.meminfo()$freeram,")", ":\n"), sep = "") #":\t"
     md.log(paste("Iteration", k), section="section")
 
     if (debug) md.log("store last data", trace=FALSE)
@@ -63,25 +93,26 @@ iteration_loop <- function(MIit, dataNA, data, boot, metrics, tolerance, doublec
     attr(dataLast, "metrics") <- metrics
     attr(dataLast, "rmse") <- error
 
-
-    #>>if (debug) LASTDATA <<- dataLast
-
     # .........................................................
-    # IMPUTATION LOOP
+    # IMPUTATION & POSTIMPUTATION LOOP
     # .........................................................
-    z <- 0
-    for (Y in vars2impute) {
-      z <- z + 1
-      it <- iterate(dataNA, data, bdata, boot, hex, bhex, metrics, tolerance, doublecheck,
-                    k, X, Y, z,
+    if (runpostimpute) procedure <- "postimpute"
+    else procedure <- "impute"
+
+    for (Y in ITERATIONVARS[z:length(ITERATIONVARS)]) {
+      start = as.integer(Sys.time())
+
+      it <- iterate(procedure = procedure,
+                    MI, dataNA, data, bdata, boot, hex, bhex, metrics, tolerance, doublecheck,
+                    m, k, X, Y, z=which(ITERATIONVARS == Y), m.it,
                     # loop data
-                    vars2impute, vars2postimpute, storeVars2impute,
-                    allPredictors, preimpute, impute, postimpute,
+                    ITERATIONVARS, vars2impute,
+                    allPredictors, preimpute, impute, postimputealgos,
                     # settings
                     error_metric, FAMILY=FAMILY, cv, tuning_time,
                     max_models, weights_column,
-                    keep_cross_validation_predictions,
-                    balance, seed, save, flush,
+                    keep_cv,
+                    autobalance, balance, seed, save, flush,
                     verbose, debug, report, sleep,
                     # saving settings
                     dataLast, mem, orderedCols, ignore, maxiter,
@@ -89,41 +120,14 @@ iteration_loop <- function(MIit, dataNA, data, boot, metrics, tolerance, doublec
                     verbosity, error, cpu, max_ram, min_ram)
 
       X <- it$X
-      vars2impute <- it$vars2impute
+      ITERATIONVARS <- it$ITERATIONVARS
       metrics <- it$metrics
       data <- it$data
       hex <- it$hex
       bhex <- it$bhex
-    }
 
-    # .........................................................
-    # POSTIMPUTATION LOOP
-    # .........................................................
-    if (runpostimpute) {
-      z <- 0
-      for (Y in vars2postimpute) {
-        z <- z + 1
-        it <- iterate(dataNA, data, bdata, boot, hex, bhex=NULL, metrics, tolerance, doublecheck,
-                      k, X, Y, z,
-                      # loop data BUT ADD POSTIMPUTE TWICE??? fix it by seperating saving
-                      vars2postimpute, vars2postimpute, storeVars2impute,
-                      allPredictors, preimpute, impute, postimpute,
-                      # settings
-                      error_metric, FAMILY=FAMILY, cv, tuning_time,
-                      max_models, weights_column,
-                      keep_cross_validation_predictions,
-                      balance, seed, save, flush,
-                      verbose, debug, report, sleep,
-                      # saving settings
-                      dataLast, mem, orderedCols, ignore, maxiter,
-                      miniter, matching, ignore.rank,
-                      verbosity, error, cpu, max_ram, min_ram)
-
-        X <- it$X
-        vars2postimpute <- it$vars2impute
-        metrics <- it$metrics
-        hex <- it$hex
-      }
+      time = as.integer(Sys.time()) - start
+      if (debug) md.log(paste("done! after: ", time, " seconds"), time = TRUE, print = TRUE)
     }
 
     # CHECK CRITERIA FOR RUNNING THE NEXT ITERATION
@@ -133,7 +137,8 @@ iteration_loop <- function(MIit, dataNA, data, boot, metrics, tolerance, doublec
                            metrics, k, vars2impute,
                            error_metric,
                            tolerance,
-                           postimpute, runpostimpute,
+                           postimputealgos,
+                           runpostimpute,
                            md.log = report)
     if (debug) {
       md.log(paste("running: ", SC$running), trace=FALSE)
@@ -144,18 +149,22 @@ iteration_loop <- function(MIit, dataNA, data, boot, metrics, tolerance, doublec
     running <- SC$running
     error <- SC$error
     runpostimpute <- SC$runpostimpute
-    vars2impute <- SC$vars2impute #only sets it to NULL
-  }
+    ITERATIONVARS <- SC$vars2impute #only sets it to NULL
 
-  # reset vars2impute because it was altered to exit the loops and
-  # setup postimputation
-  # --------------------------------------------------------------
-  vars2impute <- storeVars2impute
+    # indication of postimpute
+    if (length(ITERATIONVARS) == 0) {
+      ITERATIONVARS <- vars2impute
+      procedure <- "postimpute"
+    }
+
+    # update the loop
+    k <- k + 1L
+  }
 
   # ............................................................
   # END OF THE ITERATIONS
   # ............................................................
-  if (verbose) cat("\n\n")
+  if (verbose) message("\n\n")
 
   md.log("This is the end, beautiful friend...", trace=FALSE)
 
@@ -171,11 +180,17 @@ iteration_loop <- function(MIit, dataNA, data, boot, metrics, tolerance, doublec
     md.log("return previous iteration's data", trace=FALSE)
   }
 
-  if (clean) h2o::h2o.removeAll()
+  if (clean) tryCatch(h2o::h2o.removeAll(),
+                      error = function(cond) {
+                        message("trying to connect to JAVA server...\n");
+                        return(stop("Java server has crashed (low RAM?)"))})
 
   if (shutdown) {
     md.log("shutting down the server", trace=FALSE)
-    h2o::h2o.shutdown(prompt = FALSE)
+    tryCatch(h2o::h2o.shutdown(prompt = FALSE),
+             error = function(cond) {
+               message("trying to connect to JAVA server...\n");
+               return(warning("Java server has crashed (low RAM?)"))})
     Sys.sleep(sleep)
   }
 
@@ -194,7 +209,7 @@ iteration_loop <- function(MIit, dataNA, data, boot, metrics, tolerance, doublec
         matchedVal <- matching(imputed=dataLast[v.na, Y],
                                nonMiss=unique(dataLast[!v.na,Y]),
                                md.log)
-        #print(matchedVal)
+        #message(matchedVal)
         if (!is.null(matchedVal)) dataLast[v.na, Y] <- matchedVal
         else {
           md.log("matching failed", trace=FALSE)
