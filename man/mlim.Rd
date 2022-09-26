@@ -10,20 +10,22 @@ mlim(
   algos = c("ELNET"),
   postimpute = FALSE,
   ignore = NULL,
-  tuning_time = 180,
+  tuning_time = 900,
   max_models = NULL,
   maxiter = 10L,
+  cv = 10L,
   matching = "AUTO",
   autobalance = TRUE,
   balance = NULL,
-  weights_column = NULL,
   seed = NULL,
   verbosity = NULL,
   report = NULL,
   tolerance = 0.001,
   doublecheck = TRUE,
+  preimpute = "RF",
   cpu = -1,
   ram = NULL,
+  flush = FALSE,
   preimputed.data = NULL,
   save = NULL,
   load = NULL,
@@ -43,36 +45,41 @@ imputed. if \code{'load'} argument is provided, this argument will be ignored.}
              imputation. supported algorithms are "ELNET", "RF", "GBM", "DL",
              "XGB", and "Ensemble". if more than one algorithm is specified,
              mlim changes behavior to save on runtime. for example,
-             the default is "ELNET", which only uses Elastic Net for the imputation.
-             However, 'algos = c("ELNET", "GBM")' will not only use
-             ELNET for the initial imputation, but also, uses 'GBM'
-             as long as the 'maxiter' argument is not reached or GBM stops
-             improving. However, note that by specifying more than one algorithm,
-             "mlim" does not fine-tune them all together. Instead, it carries
-             out imputation with the first one and when the algorithm stops
-             improving, it follows with postimputation, (in this example "GBM")
-             to further optimize the imputations. the reason for having
-             this setup is that in general, "ELNET" fine-tunes much faster than "GBM",
-             "XGB", and "DL".
+             the default is "ELNET", which fine-tunes an Elastic Net model.
+             In general, "ELNET" is expected to
+             be the best algorithm because it fine-tunes very fast, it is
+             very robust to over-fitting, and hence, it generalizes very well.
+             However, if your data has many factor variables, each with several
+             levels, it is recommended to have c("ELNET", "RF") as your imputation
+             algorithms (and possibly add "Ensemble" as well, to make the most out
+             of tuning the models).
 
              Note that code{"XGB"} is only available in Mac OS and Linux. moreover,
-             "GBM", "DL", "XGB", and "Ensemble" take the full given "tuning_time" (see below) to
-             tune the best model for imputing he given variable.}
+             "GBM", "DL" and "XGB" take the full given "tuning_time" (see below) to
+             tune the best model for imputing he given variable, whereas "ELNET"
+             will produce only one fine-tuned model, often at less time than
+             other algorithms need for developing a single model, which is why "ELNET"
+             is work horse of the mlim imputation package.}
 
-\item{postimpute}{logical. if TRUE, mlim uses algorithms rather than 'ELNET' for carrying out
+\item{postimpute}{(EXPERIMENTAL FEATURE) logical. if TRUE, mlim uses algorithms rather than 'ELNET' for carrying out
 postimputation optimization. however, if FALSE, all specified algorihms will
 be used in the process of 'reimputation' together. the 'Ensemble' algorithm
-is encouraged when other algorithms are used.}
+is encouraged when other algorithms are used. However, for general users
+unspecialized in machine learning, postimpute is NOT recommended because this
+feature is currently experimental, prone to over-fitting, and highly computationally extensive.}
 
 \item{ignore}{character vector of column names or index of columns that should
 should be ignored in the process of imputation.}
 
 \item{tuning_time}{integer. maximum runtime (in seconds) for fine-tuning the
 imputation model for each variable in each iteration. the default
-time is 600 seconds but for a large dataset, you
+time is 900 seconds but for a large dataset, you
 might need to provide a larger model development
 time. this argument also influences \code{max_models},
-see below.}
+see below. If you are using 'ELNET' algorithm (default),
+you can be generous with the 'tuning_time' argument because
+'ELNET' tunes much faster than the rest and will only
+produce one model.}
 
 \item{max_models}{integer. maximum number of models that can be generated in
 the proecess of fine-tuning the parameters. this value
@@ -87,21 +94,27 @@ the imputed values are expected to be}
 \item{maxiter}{integer. maximum number of iterations. the default value is \code{15},
 but it can be reduced to \code{3} (not recommended, see below).}
 
+\item{cv}{logical. specify number of k-fold Cross-Validation (CV). values of
+10 or higher are recommended. default is 10.}
+
 \item{matching}{logical. if \code{TRUE}, imputed values are coerced to the
 closest value to the non-missing values of the variable.
 if set to "AUTO", 'mlim' decides whether to match
 or not, based on the variable classes. the default is "AUTO".}
 
-\item{autobalance}{logical. if TRUE, binary and multinomial factor variables
-will be balanced before the imputation to increase the
-Mean Per Class Error (MPCE) in the process of optimization.
-if FALSE, MMPCE will be sacrificed for overall accuracy, which
-is not recommended. in fact, higher overall accuracy does
-not mean a better imputation as long as minority classes
-are neglected, which increases the bias in favor of the
+\item{autobalance}{logical. if TRUE (default), binary and multinomial factor variables
+will be balanced before the imputation to obtain fairer
+and less-biased imputations, which are typically in favor
+of the majority class.
+if FALSE, imputation fairness will be sacrificed for overall accuracy, which
+is not recommended, although it is commonly practiced in other missing data
+imputation software. MLIM is highly concerned with imputation fairness for
+factor variables and autobalancing is generally recommended.
+in fact, higher overall accuracy does not mean a better imputation as
+long as minority classes are neglected, which increases the bias in favor of the
 majority class. if you do not wish to autobalance all the
 factor variables, you can manually specify the variables
-that should be balanced using the 'balance' argument (see below)}
+that should be balanced using the 'balance' argument (see below).}
 
 \item{balance}{character vector, specifying variable names that should be
 balanced before imputation. balancing the prevalence might
@@ -109,15 +122,6 @@ decrease the overall accuracy of the imputation, because it
 attempts to ensure the representation of the rare outcome.
 this argument is optional and intended for advanced users that
 impute a severely imbalance categorical (nominal) variable.}
-
-\item{weights_column}{non-negative integer. a vector of observation weights
-can be provided, which should be of the same length
-as the dataframe. giving an observation a weight of
-Zero is equivalent of ignoring that observation in the
-model. in contrast, a weight of 2 is equivalent of
-repeating that observation twice in the dataframe.
-the higher the weight, the more important an observation
-becomes in the modeling process. the default is NULL.}
 
 \item{seed}{integer. specify the random generator seed}
 
@@ -153,6 +157,19 @@ that marginally improve the imputation accuracy, you might gain
 higher accuracy by investing your computational resources in fine-tuning
 better algorithms such as "GBM")}
 
+\item{preimpute}{character. specifies the 'primary' procedure of handling the missing
+data. before 'mlim' begins imputing the missing observations, they should
+be prepared for the imputation algorithms and thus, they should be replaced
+with some values.
+the default procedure is a quick "RF", which models the missing
+data with parallel Random Forest model. this is a very fast procedure,
+which later on, will be replaced within the "reimputation" procedure (see below).
+possible other alternative is \code{"mm"},
+which carries out mean/mode replacement, as practiced by most imputation algorithms.
+"mm" is much faster than "RF". if your dataset is very
+large, consider pre-imputing it before hand using 'mlim.preimpute()'
+function and passing the preimputed dataset to mlim (see "preimputed.data" argument).}
+
 \item{cpu}{integer. number of CPUs to be dedicated for the imputation.
 the default takes all of the available CPUs.}
 
@@ -162,12 +179,17 @@ used for the imputation.
 large memory size is particularly advised, especially
 for multicore processes. the more you give the more you get!}
 
+\item{flush}{logical (experimental). if TRUE, after each model, the server is
+cleaned to retrieve RAM. this feature is in testing mode and is
+currently set to FALSE by default, but it is recommended if you
+have limited amount of RAM or large datasets.}
+
 \item{preimputed.data}{data.frame. if you have used another software for missing
 data imputation, you can still optimize the imputation
 by handing the data.frame to this argument, which will
 bypass the "preimpute" procedure.}
 
-\item{save}{(NOT YET IMPLEMENTED FOR R). filename. if a filename is specified, an \code{mlim} object is
+\item{save}{filename (with .mlim extension). if a filename is specified, an \code{mlim} object is
 saved after the end of each variable imputation. this object not only
 includes the imputed dataframe and estimated cross-validation error, but also
 includes the information needed for continuing the imputation,
@@ -175,7 +197,7 @@ which is very useful feature for imputing large datasets, with a
 long runtime. this argument is activated by default and an
 mlim object is stored in the local directory named \code{"mlim.rds"}.}
 
-\item{load}{(NOT YET IMPLEMENTED FOR R). an object of class "mlim", which includes the data, arguments,
+\item{load}{filename (with .mlim extension). an object of class "mlim", which includes the data, arguments,
 and settings for re-running the imputation, from where it was
 previously stopped. the "mlim" object saves the current state of
 the imputation and is particularly recommended for large datasets

@@ -28,7 +28,7 @@
 #' @noRd
 
 checkNconvert <- function(data, vars2impute, ignore,
-                          ignore.rank=FALSE, md.log=NULL) {
+                          ignore.rank=FALSE, report=NULL) {
 
   mem <- NULL
   orderedIndex <- 0
@@ -113,9 +113,11 @@ checkNconvert <- function(data, vars2impute, ignore,
 
   # only return the class and family of the vars2impute, if not ignored
   # ============================================================
-  index <- which((! COLNAMES %in% ignore) &  (COLNAMES %in% vars2impute))
+  # now match the location of the variables according to vars2impute order
+  index <- match(vars2impute, COLNAMES)
   return(list(class = features[index],
               family = family[index],
+              COLNAMES = COLNAMES[index],
               data = data,
               mem = mem,
               orderedCols = which(features == "ordered")))
