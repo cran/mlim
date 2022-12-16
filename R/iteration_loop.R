@@ -5,7 +5,7 @@
 #'             h2o.removeAll h2o.rm h2o.shutdown h2o.get_automl
 #' @importFrom md.log md.log
 #' @importFrom memuse Sys.meminfo
-#' @importFrom stats var setNames na.omit
+#' @importFrom stats var setNames na.omit rnorm
 #' @return list
 #' @author E. F. Haghish
 #' @keywords Internal
@@ -28,40 +28,69 @@ iteration_loop <- function(MI, dataNA, preimputed.data, data, bdata, boot, metri
                     # saving settings
                     mem, orderedCols, ignore, maxiter,
                     miniter, matching, ignore.rank,
-                    verbosity, error, cpu, max_ram, min_ram, shutdown, clean) {
+                    verbosity, error, cpu, max_ram, min_ram, shutdown, clean,
+                    stochastic) {
+
+  FACTORPREDCTIONS <- NULL
 
   # ------------------------------------------------------------
   # bootrtap
-  # ============================================================
+  #
+  # Bootstrap from the original dataset, hold the original NA values,
+  # and then use the preimputed dataset, and then gradually improve it
+  #
   #### PROBLEM
+  ############
   #### drop the duplicates because they screw up the k-fold cross-validation.
   #### multiple identical observations might go to train and test datasets.
+  #### here I suggest several 'work-in-progress' solutions
+  # ============================================================
+
+  ####### ===============================================
+  ####### BOOTSTRAP AND BALANCING DRAMA
+  ####### ===============================================
+  #??? THIS NEEDS FURTHER UPDATE IF 'autobalance' IS ACTIVATED
+  # THE SOlUTION WOULD BE TO CALCULATE BALANCING WEIGHTS FOR
+  # EACH OBSERVATION AND THEN MULTIPLY IT BY THE WEIGHTS_COLUMN.
+  # OR CARRY OUT BALANCED STRATIFIED SAMPLING FOR CATEGORICAL
+  # VARIABLES...
 
   if (boot) {
     rownames(data) <- 1:nrow(data) #remember the rows that are missing
-    sampling_index <- sample.int(nrow(data), nrow(data), replace=TRUE)
+    sampling_index <- sample(x = nrow(data), size = nrow(data), replace=TRUE)
+
+
 
     ## SOLUTION 1: DROP THE DUPLICATES AND DO UNDERSAMPLING
     ## ----------------------------------------------------
+    # bdata <- data[sampling_index, ]
+    # bdataNA <- is.na(bdata[, vars2impute, drop = FALSE])
+    # bdata <- mlim.preimpute(data=bdata, preimpute=preimpute, seed = NULL)
     # sampling_index <- sampling_index[!duplicated(sampling_index)]
     # bdata <- data[sampling_index, ]
+    # bdata[, "mlim_bootstrap_weights_column_"] <- 1
+    # bdataNA <- is.na(bdata[, vars2impute, drop = FALSE])
 
     ## SOLUTION 2: ADD THE DUPLICATES TO THE WEIGHT_COLUMN
     ## ----------------------------------------------------
     dups <- bootstrapWeight(sampling_index)
     bdata <- data[1:nrow(data) %in% dups[,1], ]
+    bdataNA <- is.na(bdata[, vars2impute, drop = FALSE])
+    message("\n")
+    bdata <- mlim.preimpute(data=bdata, preimpute=preimpute, seed = NULL)
+    bdata[, "mlim_bootstrap_weights_column_"] <- dups[,2] #OR ALTERNATIVELY #dups[,2] / sum(dups[,2])
 
-    # calculate bootstrap weight
-    bdata[, "mlim_bootstrap_weights_column_"] <- dups[,2]
-
-    ####### ===============================================
-    ####### BOOTSTRAP AND BALANCING DRAMA
-    ####### ===============================================
-    #??? THIS NEEDS FURTHER UPDATE IF 'autobalance' IS ACTIVATED
-    # THE SOlUTION WOULD BE TO CALCULATE BALANCING WEIGHTS FOR
-    # EACH OBSERVATION AND THEN MULTIPLY IT BY THE WEIGHTS_COLUMN.
-    # OR CARRY OUT BALANCED STRATIFIED SAMPLING FOR CATEGORICAL
-    # VARIABLES...
+    ## SOLUTION 3: Assign CV folding manually instead of weight_column
+    ## ----------------------------------------------------
+    # bdata <- data[sampling_index, ]
+    # bdataNA <- is.na(bdata[, vars2impute, drop = FALSE])
+    # bdata <- mlim.preimpute(data=bdata, preimpute=preimpute, seed = NULL)
+    # bdata[, "mlim_bootstrap_fold_assignment_"] <- 0
+    # folds <- bootstrapCV(index = sampling_index, cv = cv)
+    # for (i in 1:cv) {
+    #   indexcv <- sampling_index %in% folds[,i]
+    #   bdata[indexcv, "mlim_bootstrap_fold_assignment_"] <- i
+    # }
   }
 
   # update the fresh data
@@ -140,7 +169,8 @@ iteration_loop <- function(MI, dataNA, preimputed.data, data, bdata, boot, metri
       tryCatch(capture.output(
           it <- iterate(
             procedure = procedure,
-            MI, dataNA, preimputed.data, data, bdata, boot, hex, bhex, metrics, tolerance, doublecheck,
+            MI, dataNA, bdataNA,
+            preimputed.data, data, bdata, boot, hex, bhex, metrics, tolerance, doublecheck,
             m, k, X, Y, z=which(ITERATIONVARS == Y), m.it,
             # loop data
             ITERATIONVARS, vars2impute,
@@ -154,7 +184,7 @@ iteration_loop <- function(MI, dataNA, preimputed.data, data, bdata, boot, metri
             # saving settings
             mem, orderedCols, ignore, maxiter,
             miniter, matching, ignore.rank,
-            verbosity, error, cpu, max_ram, min_ram)
+            verbosity, error, cpu, max_ram, min_ram, stochastic)
           , file = report, append = TRUE)
         , error = function(cond) {
         message(paste0("\nReimputing '", Y, "' with the current specified algorithms failed and this variable will be skipped! \nSee Java server's error below:"));
@@ -176,6 +206,7 @@ iteration_loop <- function(MI, dataNA, preimputed.data, data, bdata, boot, metri
       # If there was no error, update the variables
       # else make sure the model is cleared
       # --------------------------------------------------------------
+#IT <<- it
       if (!is.null(it)) {
         X             <- it$X
         ITERATIONVARS <- it$iterationvars
@@ -184,7 +215,19 @@ iteration_loop <- function(MI, dataNA, preimputed.data, data, bdata, boot, metri
         bdata         <- it$bdata
         hex           <- it$hex
         bhex          <- it$bhex
+
+        # if 'factorPred' is not NULL, update the list:
+        if (!is.null(it$factorPred)) {
+          #remove the 'predict' column, which is the first column in predict dataframe
+          #Ok <<- it$factorPred[,2:ncol(it$factorPred)]
+          if (length(FACTORPREDCTIONS) > 0) FACTORPREDCTIONS <- list(FACTORPREDCTIONS, Y = it$factorPred[,2:ncol(it$factorPred)])
+          else FACTORPREDCTIONS <- list(Y = it$factorPred[,2:ncol(it$factorPred)])
+
+          # update the name of the new item
+          names(FACTORPREDCTIONS)[length(FACTORPREDCTIONS)] <- Y
+        }
       }
+
       else tryCatch(h2o::h2o.rm(h2o::h2o.get_automl("mlim")),
                     error = function(cond) {
                       return(NULL)})
@@ -274,6 +317,50 @@ iteration_loop <- function(MI, dataNA, preimputed.data, data, bdata, boot, metri
                message("trying to connect to JAVA server...\n");
                return(warning("Java server has crashed (low RAM?)"))})
     Sys.sleep(sleep)
+  }
+
+  # ------------------------------------------------------------
+  # Adding stochastic variation
+  #
+  # Note: for continuous variables, RMSE is used as indication of
+  #       standard deviation. However, for binomial and multinomial
+  #       variables, the estimated probability of each level for
+  #       each missing observation is needed and thus, the predictions
+  #       of these variables should be stored and used in this section.
+  # ============================================================
+  if (stochastic) {
+    md.log("STOCHASTIC TIMES", section="paragraph", trace=FALSE)
+
+    # evaluate each variable and add stochastic variation based on variable types
+    # ---------------------------------------------------------------------------
+    for (Y in vars2impute) {
+      v.na <- dataNA[, Y]
+      VEK <- data[which(v.na), Y]
+
+      if (FAMILY[which(ITERATIONVARS == Y)] == 'gaussian' ||
+          FAMILY[which(ITERATIONVARS == Y)] == 'gaussian_integer'
+          || FAMILY[which(ITERATIONVARS == Y)] == 'quasibinomial' ) {
+
+        RMSE <- min(metrics[metrics$variable == Y, "RMSE"], na.rm = TRUE)
+        data[which(v.na), Y] <- rnorm(
+          n = length(VEK),
+          mean = VEK,
+          sd = RMSE)
+      }
+
+      else if (FAMILY[which(ITERATIONVARS == Y)] == 'binomial' ||
+               FAMILY[which(ITERATIONVARS == Y)] == 'multinomial') {
+
+#NOK <<- FACTORPREDCTIONS
+        #> #column names represent the estimated levels' probabilities
+        stochFactors <- stochasticFactorImpute(levels = colnames(FACTORPREDCTIONS[[Y]]),
+                                               probMat = as.matrix(FACTORPREDCTIONS[[Y]]))
+
+        # replace the missing observations with the stochastic data
+        data[which(v.na), Y] <- stochFactors
+      }
+
+    }
   }
 
   # ------------------------------------------------------------

@@ -1,11 +1,11 @@
 
 <a href="https://github.com/haghish/mlim"><img src='man/figures/mlim.png' align="right" height="200" /></a>
 
-**`mlim`** : Multiple Imputation with Automated Machine Learning
+**`mlim`** : Single and Multiple Imputation with Automated Machine Learning
 ================================================================
 
 <!--<a href="https://github.com/haghish/mlim"><img src="./web/mlim.png" align="left" width="140" hspace="10" vspace="6"></a> -->
-[![GitHub dev](https://img.shields.io/github/release/haghish/mlim.svg?color=2eb885)](https://github.com/haghish/mlim/releases/?include_prereleases&sort=semver "View GitHub releases")
+[![GitHub dev](https://img.shields.io/github/v/release/haghish/mlim.svg?color=2eb885)](https://github.com/haghish/mlim/releases/?include_prereleases&sort=semver "View GitHub releases")
 [![CRAN version](http://www.r-pkg.org/badges/version/mlim?color=2eb8b3)](https://cran.r-project.org/package=mlim)  [![](https://cranlogs.r-pkg.org/badges/grand-total/mlim?color=a958d1)](https://cran.r-project.org/package=mlim) [![](man/figures/manual.svg)](https://CRAN.R-project.org/package=mlim)
 <!--  [![](man/figures/handbook_stupid.svg)](https://github.com/haghish/mlim_handbook/blob/main/mlim_handbook.pdf) 
 
@@ -22,6 +22,9 @@
 3. **Faster imputation of big datasets** because **`mlim`** excells in making an efficient use of available CPU cores and the runtime scales fairly well as the size of data becomes huge. 
 
 The high performance of **`mlim`** is mainly by **fine-tuning** an **`ELNET`** algorithm, which often outperforms any standard statistical procedure or untuned machine learning algorithm and generalizes very well. However, **`mlim`** is an active research project and hence, it comes with a set of **experimental optimization toolkit** for exploring the possibility of performing multiple imputation with industry-standard machine learning algorithms such as _Deep Learning_, _Gradient Boosting Machine_, _Extreme Gradient Boosting_, and _Stacked Ensembles_. These algorithms can be used for either imputing missing data or optimizing already imputed data, but are **NOT used by default NOR recommended to all users**. Advanced users who are interested in exploring the possibilities of imputing missing data with these algorithms are recommended to read the free handbook (see below). These algorithms, as noted, are experimental, and the author is intended to examine their effectiveness for academic research (at this point). If you are interested to collaborate, [get in touch with the author](https://www.sv.uio.no/psi/english/people/aca/haghish/). 
+
+
+> **NOTE**: Prior to version 0.3.0, `mlim` did not use a stochastic procedure and thus, the multiple imputation algorithm was inflating the relationships between the imputed variables. A solution is implemented in version 0.3.0, which is automatically activated for multiple imputation and is currently under testing. You can investigate the code for `stochastic = TRUE` argument to see how this procedure is implemented. In stochastic multiple imputation, `mlim` uses the estimated RMSE of each continuous variable as an indication of standard error and replaces the imputed values with stochastic values drawn with a mean equal to the imputed value and SD equal to the RMSE. For factor variables, however, `mlim` draws a random value based on estimated probabilities of each factor level for each missing value. These two procedures are still under testing... Meanwhile, for a single imputation, `mlim` continues to be the top performer among other R packages that I have tested.
 
 Fine-tuning missing data imputation
 -----------------------------------
@@ -159,6 +162,10 @@ Example
 
 `iris` ia a small dataset with 150 rows only. Let's add 50% of artifitial missing data and compare several state-of-the-art machine learning missing data imputation procedures. __`ELNET`__ comes up as a winner for a very simple reason! Because it was fine-tuned and all the rest were not. The larger the dataset and the higher the number of features, the difference between __`ELNET`__ and the others becomes more vivid. 
 
+### Single imputation
+
+In a single imputation, the NAs are replaced with the most plausible values according the model. You do not get the diversity of the multiple imputation, but you still get an estimated imputation error based on 10-fold (or higher, if specified) cross-validation procedure for each variable (column) in the dataset. As shown below, `mlim` provides the **`mlim.error()`** function to summarize the imputation error for the entire dataset or each variable. 
+
 ```R
 # Comparison of different R packages imputing iris dataset
 # ===============================================================================
@@ -166,7 +173,6 @@ rm(list = ls())
 library(mlim)
 library(mice)
 library(missForest)
-library(missRanger)
 library(VIM)
 
 # Add artifitial missing data
@@ -193,11 +199,31 @@ print(MCerror <- mlim.error(MC, irisNA, iris))
 set.seed(2022)
 RF <- missForest(irisNA)
 print(RFerror <- mlim.error(RF$ximp, irisNA, iris))
-
-rngr <- missRanger(irisNA, num.trees=100, seed = 2022)
-print(missRanger <- mlim.error(rngr, irisNA, iris))
 ```
 
+### Multiple imputation
 
+`mlim` supports multiple imputation. All you need to do is to specify an integer higher than 1 for the value of `m`. For example, set `m = 5` in the `mlim` function to impute 5 datasets. Then, `mlim` returns a list including 5 datasets. You can convert this list to a `mids` object using the **`mlim.mids()`** function and then follow up the analysis with the `mids` object the same way it is carried out by the [`mice`](https://CRAN.R-project.org/package=mice) R package. Here is an example:
+
+```R
+# Comparison of different R packages imputing iris dataset
+# ===============================================================================
+rm(list = ls())
+library(mlim)
+library(mice)
+
+# Add artifitial missing data
+# ===============================================================================
+irisNA <- mlim.na(iris, p = 0.5, stratify = TRUE, seed = 2022)
+
+# multiple imputation with mlim, giving it 180 seconds to fine-tune each imputation
+# ===============================================================================
+MLIM2 <- mlim(irisNA,  m = 5, seed = 2022, tuning_time = 180) 
+print(MLIMerror2 <- mlim.error(MLIM2, irisNA, iris))
+mids <- mlim.mids(MLIM2, dfNA)
+fit <- with(data=mids, exp=glm(Species ~ Sepal.Length, family = "binomial"))
+res <- mice::pool(fit)
+summary(res)
+```
 
 

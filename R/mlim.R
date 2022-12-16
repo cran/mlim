@@ -70,7 +70,9 @@
 #'                   is encouraged when other algorithms are used. However, for general users
 #'                   unspecialized in machine learning, postimpute is NOT recommended because this
 #'                   feature is currently experimental, prone to over-fitting, and highly computationally extensive.
-# @param min_ram character. specifies the minimum size.
+#' @param stochastic logical. by default it is set to TRUE for multiple imputation and FALSE for
+#'                   single imputation. stochastic argument is currently under testing and is intended to
+#'                   avoid inflating the correlation between imputed valuables.
 #' @param ignore character vector of column names or index of columns that should
 #'               should be ignored in the process of imputation.
 #' @param tuning_time integer. maximum runtime (in seconds) for fine-tuning the
@@ -241,9 +243,8 @@
 #'
 #' @examples
 #'
-#' \donttest{
+#' \dontrun{
 #' data(iris)
-#'
 #'
 #' # add stratified missing observations to the data. to make the example run
 #' # faster, I add NAs only to a single variable.
@@ -270,12 +271,12 @@
 #
 # ### run GBM, RF, ELNET, and Ensemble algos and allow 60 minutes of tuning for each variable
 # ### this requires a lot of RAM on your machine and a lot of time!
-# # MLIM <- mlim(dfNA, algos = c("GBM", "RF","ELNET","Ensemble"), tuning_time=60*60)
-# # mlim.error(MLIM, dfNA, iris)
+# MLIM <- mlim(dfNA, algos = c("GBM", "RF","ELNET","Ensemble"), tuning_time=60*60)
+# mlim.error(MLIM, dfNA, iris)
 #
 # ### if you have a larger data, there is a few things you can set to make the
 # ### algorithm faster, yet, having only a marginal accuracy reduction as a trade-off
-# # MLIM <- mlim(dfNA, algos = 'ELNET', tolerance = 1e-3, doublecheck = FALSE)
+# MLIM <- mlim(dfNA, algos = 'ELNET', tolerance = 1e-3, doublecheck = FALSE)
 #' }
 #' @export
 
@@ -284,6 +285,7 @@ mlim <- function(data = NULL,
                  m = 1,
                  algos = c("ELNET"), #impute, postimpute
                  postimpute = FALSE,
+                 stochastic = m > 1,
                  ignore = NULL,
 
                  # computational resources
@@ -347,7 +349,7 @@ mlim <- function(data = NULL,
 
   # check the ... arguments
   # ============================================================
-  hidden_args <- c("superdebug", "init", "ignore.rank", "sleep")
+  hidden_args <- c("superdebug", "init", "ignore.rank", "sleep", "stochastic")
   stopifnot(
     "incompatible '...' arguments" = (names(list(...)) %in% hidden_args)
   )
@@ -373,7 +375,9 @@ mlim <- function(data = NULL,
   ignore.rank <- threeDots(name = "ignore.rank", ..., default = FALSE)  #EXPERIMENTAL
   sleep       <- threeDots(name = "sleep", ..., default = .25)
   superdebug  <- threeDots(name = "superdebug", ..., default = FALSE)
-  set.seed(seed)
+  #stochastic  <- threeDots(name = "stochastic", ..., default = FALSE)
+
+
 
   # ============================================================
   # ============================================================
@@ -456,6 +460,8 @@ mlim <- function(data = NULL,
   # ============================================================
   # ============================================================
   else {
+    if (!is.null(seed)) set.seed(seed) # avoid setting seed by default if it is a continuation
+
     alg <- algoSelector(algos, postimpute)
     # preimpute <- "RF" #alg$preimpute ## for now, make this global
     impute <- alg$impute
@@ -520,7 +526,7 @@ mlim <- function(data = NULL,
   # ============================================================
   if (is.null(load)) {
     VARS <- selectVariables(data, ignore, verbose, report)
-# EEE<<- VARS
+
     dataNA <- VARS$dataNA # the missing data placeholder
     allPredictors <- VARS$allPredictors
     vars2impute <- VARS$vars2impute
@@ -585,7 +591,13 @@ mlim <- function(data = NULL,
     # PREIMPUTATION: replace data with preimputed data
     # .........................................................
     if (preimpute != "iterate" & is.null(preimputed.data)) {
-      data <- mlim.preimpute(data=data, preimpute=preimpute, seed = seed)
+
+      # preimpute in single imputation ONLY. for multiple imputation, each
+      # bootstrap dataset is imputed seperately
+      if (m == 1) {
+        data <- mlim.preimpute(data=data, preimpute=preimpute, seed = NULL) # DO NOT RESET THE SEED!
+      }
+
       # reset the relevant predictors
       X <- allPredictors
     }
@@ -649,7 +661,8 @@ mlim <- function(data = NULL,
                                miniter, matching, ignore.rank,
                                verbosity, error, cpu, max_ram=max_ram, min_ram=min_ram,
                                #??? shutdown has to be fixed in future updates
-                               shutdown=FALSE, clean = TRUE)
+                               shutdown=FALSE, clean = TRUE,
+                               stochastic=stochastic)
 
     if (m > 1) MI[[m.it]] <- dataLast
     else MI <- dataLast

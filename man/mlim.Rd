@@ -9,6 +9,7 @@ mlim(
   m = 1,
   algos = c("ELNET"),
   postimpute = FALSE,
+  stochastic = m > 1,
   ignore = NULL,
   tuning_time = 900,
   max_models = NULL,
@@ -67,6 +68,10 @@ be used in the process of 'reimputation' together. the 'Ensemble' algorithm
 is encouraged when other algorithms are used. However, for general users
 unspecialized in machine learning, postimpute is NOT recommended because this
 feature is currently experimental, prone to over-fitting, and highly computationally extensive.}
+
+\item{stochastic}{logical. by default it is set to TRUE for multiple imputation and FALSE for
+single imputation. stochastic argument is currently under testing and is intended to
+avoid inflating the correlation between imputed valuables.}
 
 \item{ignore}{character vector of column names or index of columns that should
 should be ignored in the process of imputation.}
@@ -226,9 +231,8 @@ imputes data.frame with mixed variable types using automated
 }
 \examples{
 
-\donttest{
+\dontrun{
 data(iris)
-
 
 # add stratified missing observations to the data. to make the example run
 # faster, I add NAs only to a single variable.
